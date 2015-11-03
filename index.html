@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width">
+<style>
+#graphs {
+  font: 10px sans-serif;
+}
+
+.axis path,
+.axis line {
+  fill: none;
+  stroke: #000;
+  shape-rendering: crispEdges;
+}
+
+.x.axis path {
+  display: none;
+}
+
+.line {
+  fill: none;
+  stroke: steelblue;
+  stroke-width: 1.5px;
+}
+
+.line.selected {
+  fill: none;
+  stroke: rgb(252,141,89);
+  stroke-width: 1.5px;
+}
+
+.area {
+  fill: #8a89a6;
+}
+</style>
+<link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/3.3.5/css/bootstrap.min.css" integrity="sha512-dTfge/zgoMYpP7QbHy4gWMEGsbsdZeCXz7irItjcC3sPUFtf0kuFbDz/ixG7ArTxmDjLXDmezHubeNikyKGVyQ==" crossorigin="anonymous">
+<body>
+	<div class="container" style="margin: 20px;">
+		<form class="form-inline">
+			<div class="form-group">
+				<label for="symbol">Symbol</label>
+				<input value="0939" type="tel" class="form-control input-sm" id="symbol" placeholder="Stock Symbol">
+			</div>
+			<div class="form-group">
+				<label for="bound">Bound %</label>
+				<input value="10" type="number" class="form-control input-sm" id="bound" placeholder="Bound %">
+			</div>
+			<input class="btn btn-default" type="button" value="Analyze" ontouchstart="runAnalyzer()" onclick="runAnalyzer()">
+		</form>
+	</div>
+	<div id="output"></div>
+	<div id="graphs"></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/3.5.5/d3.min.js"></script>
+<script>
+
+var DataStore = function(fetcher) {
+	var that = this;
+	this.fetcher = fetcher;
+	var symbols = [];	
+	this.get = function(symbol, callback) {
+		d3.json(symbol + ".json", function(error, data) {
+			callback(data);
+		});
+	};
+	d3.csv("symbols.csv")
+		.row(function(d) { 
+			return {symbol: d.symbol + ".HK"}; 
+		}).get(function(error, rows) { 
+			symbols = rows;
+		});
+};
+
+var YQLFetcher = function(visualizer) {	
+	this.visualizer = visualizer;
+	this.get = function(symbol, start, end, callback) {	
+		var url = "https://query.yahooapis.com/v1/public/yql?q="
+			+ "select%20Date,%20Close%20from%20yahoo.finance.historicaldata%20"			
+			+ "where%20symbol%20%3D%20%22" + symbol;
+		if (start)
+			url = url + "%22%20and%20startDate%20%3D%20%22"	+ start;
+		if (end)
+			url = url + "%22%20and%20endDate%20%3D%20%22" + end;
+		url = url + "%22&format=json&env=store%3A%2F%2Fdatatables.org%2Falltableswithkeys";
+		d3.json(url, function(error, data) {
+			if (error || !data.query.results) {
+				console.warn("No data fetched " + error);
+				callback(null);
+			} else {
+				var quote = data.query.results.quote;
+				for (var i=0; i<quote.length; i++) {
+					quote[i].Close = parseFloat(quote[i].Close);
+				}
+				callback(quote);
+			}			
+		});
+	};	
+	this.getLargeData = function(symbol, noOfYear, callback) {
+		getByYear(symbol, noOfYear, [], callback);
+	}
+	var that = this;
+	var getByYear = function(symbol, noOfYear, resultSet, callback) {
+		var start = DateCal.getNYearBefore(noOfYear);
+		var end = DateCal.getNYear1DayBefore(noOfYear - 1);
+		console.log("getting " + start + " to " + end);
+		that.get(symbol, start, end, function(quote) {
+			if (quote)
+				resultSet = quote.concat(resultSet);
+			that.visualizer.clean();
+			if (noOfYear > 1) {
+				if (quote)
+					that.visualizer.render(quote);
+				getByYear(symbol, noOfYear - 1, resultSet, callback);				
+			} else {				
+				that.visualizer.render(resultSet);
+				callback(resultSet);
+			}
+		});
+	};
+};
+
+var DateCal = {
+	formatDate: function(date) {
+		var dd = date.getDate();
+		if (dd < 10)
+			dd = "0" + dd;
+		var mm = (date.getMonth() + 1).toString();
+		if (mm < 10)
+			mm = "0" + mm;		
+		return date.getFullYear() + "-" + mm + "-" + dd;
+	},
+	getToday: function() {
+		return DateCal.formatDate(new Date());		
+	},
+	getLastNMonth: function(n) {
+		var date = new Date();
+		date = new Date(date.getTime() - (1000*60*60*24*30*n));
+		return DateCal.formatDate(date);
+	},
+	getNYearBefore: function(n) {
+		var date = new Date();
+		date.setYear(date.getFullYear() - n);
+		return DateCal.formatDate(date);
+	},
+	getNYear1DayBefore: function(n) {
+		var date = new Date();
+		date.setYear(date.getFullYear() - n);
+		date.setDate(date.getDate() - 1);
+		return DateCal.formatDate(date);
+	}
+};
+
+var Analyzer = function(dataStore, visualizer) {
+	this.dataStore = dataStore;
+	this.visualizer = visualizer;
+	this.filters = [];
+	this.addFilter = function(filter) {
+		this.filters.push(filter);
+	};		
+	var findSequence = function(quote, bound) {
+		var seq = [];
+		var mean = d3.mean(quote, function(d) { return d.close; });
+		var flag = 0;
+		var upper = mean * (1 + bound);
+		var lower = mean * (1 - bound);
+		console.log("mean " + mean + " [" + upper + "," + lower + "]");
+		for (var i=0; i<quote.length; i++) {			
+			if (flag <= 0 && quote[i].close >= upper) {
+				flag = 1;
+				seq.push(quote[i]);
+			} else if (flag >= 0 && quote[i].close <= lower) {
+				flag = -1;
+				seq.push(quote[i]);
+			}
+		}
+		console.log(JSON.stringify(seq));
+		return seq;
+	};	
+	this.process = function(symbol, bound, minNoOfMaxMin) {
+		var that = this;
+		dataStore.get(symbol, function(quote) {
+			this.visualizer.clean();		
+			var selected = findSequence(quote, bound);
+			if (visualizer)
+				visualizer.render(quote, selected);
+			for (var i=0; i<that.filters.length; i++) {				
+				quote = that.filters[i].run(quote);	
+				minNoOfMaxMin = minNoOfMaxMin / 2;
+				selected = findSequence(quote, bound);
+				if (visualizer)
+					visualizer.render(quote, selected);
+			}
+		});
+	};
+};
+
+var Visualizer = function() {	
+	this.clean = function() {
+		var graphs = document.getElementById("graphs");
+		while (graphs.firstChild) {
+			graphs.removeChild(graphs.firstChild);
+		}
+	};
+	var parseDate = d3.time.format("%Y-%m-%d").parse;	
+	this.render = function(quote, selectedQuote) {
+		var title = quote[quote.length - 1].date + " to " + quote[0].date;
+		var q = [];
+		quote.forEach(function(d) {
+			q.push({
+				date: parseDate(d.date),
+				close: +d.close
+			});
+		});			
+		var maxY = d3.max(q, function(d) { return d.close; });		
+		var minY = d3.min(q, function(d) { return d.close; });
+		var margin = {top: 20, right: 20, bottom: 30, left: 50},
+			width = 960 - margin.left - margin.right,
+			height = 500 - margin.top - margin.bottom;		
+		var x = d3.time.scale()
+			.range([0, width]);
+		var y = d3.scale.linear()
+			.range([height, 0]);
+		var xAxis = d3.svg.axis()
+			.scale(x)
+			.orient("bottom");
+		var yAxis = d3.svg.axis()
+			.scale(y)
+			.orient("left");
+		var line = d3.svg.line()
+			.x(function(d) { return x(d.date); })
+			.y(function(d) { return y(d.close); });		
+		var area = d3.svg.area()
+			.x(function(d) { return x(d.date); })
+			.y0(function(d) { return y(minY); })
+			.y1(function(d) { if (!d) return y(minY); else return y(d.close); });
+		var svg = d3.select("#graphs")
+			.append("svg")
+				.attr("width", width + margin.left + margin.right)
+				.attr("height", height + margin.top + margin.bottom)
+			.append("g")
+				.attr("transform", "translate(" + margin.left + "," + margin.top + ")");
+		x.domain(d3.extent(q, function(d) { return d.date; }));
+		y.domain(d3.extent(q, function(d) { return d.close; }));
+		svg.append("g")
+			.attr("class", "x axis")
+			.attr("transform", "translate(0," + height + ")")
+			.call(xAxis);
+		svg.append("g")
+				.attr("class", "y axis")
+				.call(yAxis)
+			.append("text")
+				.attr("transform", "rotate(-90)")
+				.attr("y", 6)
+				.attr("dy", ".71em")
+				.style("text-anchor", "end")
+				.text("Close Price ($)");
+		svg.append("path")
+			.datum(q)
+			.attr("class", "line")
+			.attr("d", line);
+		svg.append("text")
+			.attr("x", (width / 2))             
+			.attr("y", 0 - (margin.top / 2))
+			.attr("text-anchor", "middle")  
+			.style("font-size", "14px") 
+			.style("text-decoration", "underline")  
+			.text(title);
+		if (selectedQuote) {
+			var selectedQ = [];
+			selectedQuote.forEach(function(d) {
+				selectedQ.push({
+					date: parseDate(d.date),
+					close: +d.close
+				});
+			});	
+			svg.append("path")
+				.datum(selectedQ)
+				.attr("class", "line selected")
+				.attr("d", line);
+		}		
+	};
+};
+var visualizer = new Visualizer();
+var dataStore = new DataStore(new YQLFetcher(visualizer));
+
+var analyzer = new Analyzer(dataStore, visualizer);
+
+function runAnalyzer() {
+	var symbol = document.getElementById("symbol").value;
+	if (symbol.length < 5)
+		symbol = symbol + ".HK";
+	var bound = document.getElementById("bound").value / 100;
+	
+	analyzer.process(symbol, bound);
+}
+
+</script>
+</body>
