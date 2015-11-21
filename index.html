@@ -45,6 +45,10 @@
 				<label for="bound">Bound %</label>
 				<input value="10" type="number" class="form-control input-sm" id="bound" placeholder="Bound %">
 			</div>
+			<div class="form-group">
+				<label for="bound">Last N Year</label>
+				<input value="10" min="1" max="10" type="number" class="form-control input-sm" id="lastNYear" placeholder="Last N Year">
+			</div>
 			<input class="btn btn-default" type="button" value="Analyze" ontouchstart="runAnalyzer()" onclick="runAnalyzer()">
 		</form>
 	</div>
@@ -60,6 +64,20 @@ var DataStore = function(fetcher) {
 	this.get = function(symbol, callback) {
 		d3.json(symbol + ".json", function(error, data) {
 			callback(data);
+		});
+	};
+	var parseDate = d3.time.format("%Y-%m-%d").parse;
+	this.getByStartYear = function(symbol, lastNYear, callback) {
+		var start = parseDate(DateCal.getNYearBefore(lastNYear));
+		this.get(symbol, function(quote) {
+			var temp = [];
+			for (var i=0; i<quote.length; i++) {
+				var date = parseDate(quote[i].date);
+				if (date.getTime() >= start.getTime()) {
+					temp.push(quote[i]);
+				}
+			}			
+			callback(temp);
 		});
 	};
 	d3.csv("symbols.csv")
@@ -175,9 +193,9 @@ var Analyzer = function(dataStore, visualizer) {
 		console.log(JSON.stringify(seq));
 		return seq;
 	};	
-	this.process = function(symbol, bound, minNoOfMaxMin) {
+	this.process = function(symbol, lastNYear, bound, minNoOfMaxMin) {
 		var that = this;
-		dataStore.get(symbol, function(quote) {
+		dataStore.getByStartYear(symbol, lastNYear, function(quote) {
 			this.visualizer.clean();		
 			var selected = findSequence(quote, bound);
 			if (visualizer)
@@ -286,11 +304,16 @@ var analyzer = new Analyzer(dataStore, visualizer);
 
 function runAnalyzer() {
 	var symbol = document.getElementById("symbol").value;
+	while (symbol.length < 4) {
+		symbol = "0" + symbol;
+		document.getElementById("symbol").value = symbol;
+	}
 	if (symbol.length < 5)
 		symbol = symbol + ".HK";
 	var bound = document.getElementById("bound").value / 100;
+	var lastNYear = document.getElementById("lastNYear").value;
 	
-	analyzer.process(symbol, bound);
+	analyzer.process(symbol, lastNYear, bound);
 }
 
 </script>
